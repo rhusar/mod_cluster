@@ -451,11 +451,12 @@ public class AdvertiseListenerImpl implements AdvertiseListener {
                 } catch(InterruptedIOException e) {
                 	Thread.currentThread().interrupt();
                 } catch (IOException e) {
+                    log.tracef("Exception receiving/processing a datagram packet", e);
+
                     AdvertiseListenerImpl.this.listening = false;
                     if (this.socket == null || this.socket.isClosed())
                     	Thread.currentThread().interrupt();
                     else {
-
                     	// Do not blow the CPU in case of communication error
                     	Thread.yield();
                     }

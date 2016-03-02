@@ -66,6 +66,15 @@ public class Utils {
                     if (closeBracket < lastColon) {
                         port = Integer.parseInt(addressPort.substring(lastColon + 1));
                     }
+                } else {
+                    // Detect IPv6 RFC non-compliant address style address%interface:port
+                    int interfaceDelimiter = addressPort.indexOf("%");
+                    if (interfaceDelimiter != -1) {
+                        if (lastColon > interfaceDelimiter) {
+                            address = addressPort.substring(0, lastColon);
+                            port = Integer.parseInt(addressPort.substring(lastColon + 1));
+                        }
+                    }
                 }
             }
         }

@@ -59,5 +59,10 @@ public class UtilsTestCase {
 
         Assert.assertEquals(InetAddress.getLocalHost().getHostName(), address.getHostName());
         Assert.assertEquals(0, address.getPort());
+
+//        address = Utils.parseSocketAddress("::1%lo0:8484", 0);
+//
+//        Assert.assertEquals("0:0:0:0:0:0:0:1%lo0", address.getHostName());
+//        Assert.assertEquals(8484, address.getPort());
     }
 }
