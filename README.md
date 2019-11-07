@@ -1,5 +1,4 @@
 mod_cluster [![Build Status](https://travis-ci.org/modcluster/mod_cluster.svg?branch=master)](https://travis-ci.org/modcluster/mod_cluster) [![Dependabot Status](https://api.dependabot.com/badges/status?host=github&repo=rhusar/mod_cluster)](https://dependabot.com)
-
 ===========
 
 Project mod_cluster is an intelligent load-balancer. It uses a communication channel to forward requests from a reverse
