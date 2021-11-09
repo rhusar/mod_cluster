@@ -31,7 +31,7 @@
     <name>mod_cluster: Container - Tomcat 10.0</name>
 
     <properties>
-        <version.org.apache.tomcat-test>10.0.1</version.org.apache.tomcat-test>
+        <version.org.apache.tomcat-test>10.0.12</version.org.apache.tomcat-test>
     </properties>
 
     <dependencies>
