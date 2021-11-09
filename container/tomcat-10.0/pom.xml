@@ -31,7 +31,7 @@
     <name>mod_cluster: Container - Tomcat 10.0</name>
 
     <properties>
-        <version.org.apache.tomcat-test11>10.0.4</version.org.apache.tomcat-test11>
+        <version.org.apache.tomcat-test111>10.0.5</version.org.apache.tomcat-test111>
     </properties>
 
     <dependencies>
@@ -47,19 +47,19 @@
         <dependency>
             <groupId>org.apache.tomcat</groupId>
             <artifactId>tomcat-catalina</artifactId>
-            <version>${version.org.apache.tomcat-test11}</version>
+            <version>${version.org.apache.tomcat-test111}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.tomcat</groupId>
             <artifactId>tomcat-coyote</artifactId>
-            <version>${version.org.apache.tomcat-test11}</version>
+            <version>${version.org.apache.tomcat-test111}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.tomcat</groupId>
             <artifactId>tomcat-util</artifactId>
-            <version>${version.org.apache.tomcat-test11}</version>
+            <version>${version.org.apache.tomcat-test111}</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>
