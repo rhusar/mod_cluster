@@ -4,75 +4,41 @@ updates:
   directory: "/"
   schedule:
     interval: daily
-    time: "10:00"
-  open-pull-requests-limit: 10
   ignore:
     - dependency-name: org.apache.tomcat:tomcat-catalina
-      versions:
-        - ">= 1"
     - dependency-name: org.apache.tomcat:tomcat-coyote
-      versions:
-        - ">= 1"
     - dependency-name: org.apache.tomcat:tomcat-servlet-api
-      versions:
-        - ">= 1"
     - dependency-name: org.apache.tomcat:tomcat-util
-      versions:
-        - ">= 1"
 - package-ecosystem: maven
   directory: "/container/tomcat-8.5"
   schedule:
     interval: daily
-    time: "10:00"
-  open-pull-requests-limit: 10
   ignore:
     - dependency-name: org.apache.tomcat:tomcat-catalina
-      versions:
-        - "< 8.5, >= 9"
+      versions: ["9.x", "10.x"]
     - dependency-name: org.apache.tomcat:tomcat-coyote
-      versions:
-        - "< 8.5, >= 9"
-    - dependency-name: org.apache.tomcat:tomcat-servlet-api
-      versions:
-        - "< 8.5, >= 9"
+      versions: ["9.x", "10.x"]
     - dependency-name: org.apache.tomcat:tomcat-util
-      versions:
-        - "< 8.5, >= 9"
+      versions: ["9.x", "10.x"]
 - package-ecosystem: maven
   directory: "/container/tomcat-9.0"
   schedule:
     interval: daily
-    time: "10:00"
-  open-pull-requests-limit: 10
   ignore:
     - dependency-name: org.apache.tomcat:tomcat-catalina
-      versions:
-        - "< 9, >= 10"
+      versions: ["10.x"]
     - dependency-name: org.apache.tomcat:tomcat-coyote
-      versions:
-        - "< 9, >= 10"
-    - dependency-name: org.apache.tomcat:tomcat-servlet-api
-      versions:
-        - "< 9, >= 10"
+      versions: ["10.x"]
     - dependency-name: org.apache.tomcat:tomcat-util
-      versions:
-        - "< 9, >= 10"
-- package-ecosystem: maven
-  directory: "/container/tomcat-10.0"
-  schedule:
-    interval: daily
-    time: "10:00"
-  open-pull-requests-limit: 10
-  ignore:
-    - dependency-name: org.apache.tomcat:tomcat-catalina
-      versions:
-        - "< 10, >= 11"
-    - dependency-name: org.apache.tomcat:tomcat-coyote
-      versions:
-        - "< 10, >= 11"
-    - dependency-name: org.apache.tomcat:tomcat-servlet-api
-      versions:
-        - "< 10, >= 11"
-    - dependency-name: org.apache.tomcat:tomcat-util
-      versions:
-        - "< 10, >= 11"
+      versions: ["10.x"]
+#- package-ecosystem: maven
+#  directory: "/container/tomcat-10.0"
+#  schedule:
+#    interval: daily
+#  ignore:
+#    - dependency-name: org.apache.tomcat:tomcat-catalina
+#      versions: ["10.1.x"]
+#    - dependency-name: org.apache.tomcat:tomcat-coyote
+#      versions: ["10.1.x"]
+#    - dependency-name: org.apache.tomcat:tomcat-util
+#      versions: ["10.1.x"]
