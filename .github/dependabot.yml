@@ -1,4 +1,10 @@
 version: 2
+# Override bad release in jboss.org repo.
+registries:
+  maven-artifactory:
+    type: maven-repository
+    url: https://repo.maven.apache.org/maven2/
+    replaces-base: true
 updates:
   - package-ecosystem: maven
     directory: "/"
