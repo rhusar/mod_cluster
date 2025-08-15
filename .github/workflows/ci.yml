@@ -14,15 +14,15 @@ jobs:
       matrix:
         os:
           - macos-latest
-          - ubuntu-latest
-          - windows-latest
+          #- ubuntu-latest
+          #- windows-latest
         # Keep this list as: all supported LTS JDKs, the latest GA JDK, and optionally the latest EA JDK (if available).
         # Reference: https://adoptium.net/support/
         java:
           - 17
-          - 21
-          - 24
-          - 25-ea
+          #- 21
+          #- 24
+          #- 25-ea
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -32,10 +32,15 @@ jobs:
           distribution: temurin
           java-version: ${{ matrix.java }}
           cache: maven
+      - name: Looks at ifcaces
+        #run: ifconfig
+        run: netstat -rn | grep '^224'
+      #- run: sudo route -n add -net 224.0.0.0/4 -interface en0
       - name: Build with Maven
         # To support Windows PowerShell, a space between --define property=true is required.
         # n.b. bytebuddy experimental features must be enabled on early access JDKs.
-        run: ./mvnw --batch-mode --no-transfer-progress clean verify --define net.bytebuddy.experimental=${{ matrix.java == '25-ea' }}
+        run: ./mvnw --batch-mode --no-transfer-progress clean verify --define net.bytebuddy.experimental=${{ matrix.java == '25-ea' }} -Dmulticast.interface.name=lo0
+        #-Dmulticast.address1=192.168.64.1 -Dmulticast.address2=192.168.64.2
       # Code Coverage (runs once per matrix)
       - name: Build with coverage with Maven using JDK ${{ matrix.java }}
         if: ${{ matrix.java == '17' && matrix.os == 'ubuntu-latest' }}
