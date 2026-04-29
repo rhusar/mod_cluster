@@ -27,10 +27,8 @@ import org.jboss.modcluster.advertise.DatagramChannelFactory;
  * On Windows-like systems, we do not attempt to bind the socket to the multicast address, we only bind to the port.
  * <p>
  * On BSD-like systems (e.g. OS X) we also need to bind the DatagramChannel to the multicast address. If httpd with
- * mod_proxy_cluster (which is bound to the multicast address) is running on the same system, the AdvertiseListener
- * would not be able to bind to any address (i.e. only binding to the port without the address) because JDK does not
- * expose SO_REUSEPORT as a socket option which would be required for this to work. This is to be supported since JDK 9.
- * See {@link <a href="https://bugs.openjdk.java.net/browse/JDK-6432031">JDK-6432031</a>}.
+ * mod_proxy_cluster (which is bound to the multicast address) is running on the same system, SO_REUSEPORT is set
+ * to allow both processes to bind to the same multicast address and port.
  *
  * @author Paul Ferraro
  * @author Radoslav Husar
@@ -92,7 +90,7 @@ public class DatagramChannelFactoryImpl implements DatagramChannelFactory {
         }
     }
 
-    private static DatagramChannel newChannel(InetAddress multicastAddress, InetSocketAddress bindAddress) throws IOException {
+    private DatagramChannel newChannel(InetAddress multicastAddress, InetSocketAddress bindAddress) throws IOException {
         DatagramChannel channel;
         if (multicastAddress == null) {
             channel = DatagramChannel.open();
@@ -100,6 +98,11 @@ public class DatagramChannelFactoryImpl implements DatagramChannelFactory {
             channel = DatagramChannel.open(multicastAddress instanceof Inet4Address ? StandardProtocolFamily.INET : StandardProtocolFamily.INET6);
         }
         channel.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+        if (channel.supportedOptions().contains(StandardSocketOptions.SO_REUSEPORT)) {
+            channel.setOption(StandardSocketOptions.SO_REUSEPORT, true);
+        } else {
+            this.log.debugf("SO_REUSEPORT is not supported on this platform.");
+        }
         if (bindAddress != null) {
             channel.bind(bindAddress);
         }
