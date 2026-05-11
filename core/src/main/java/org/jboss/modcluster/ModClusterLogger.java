@@ -41,6 +41,11 @@ public interface ModClusterLogger {
     @Message(id = 0, value = CATCHING_MARKER)
     void catchingDebug(@Cause Throwable throwable);
 
+    /**
+     * XXX where does this appear?
+     *
+     * @param version the version string XYZ
+     */
     @LogMessage(level = INFO)
     @Message(id = 1, value = "Initializing mod_cluster version %s")
     void init(String version);
