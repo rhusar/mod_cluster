@@ -118,7 +118,7 @@ public interface ModClusterLogger {
 //    void createMulticastSocketWithUnicastAddress(InetAddress address);
 
     @LogMessage(level = WARN)
-    @Message(id = 31, value = "Could not bind multicast socket to %s (%s address): %s; make sure your multicast address is of the same type as the IP stack (IPv4 or IPv6). Multicast socket will not be bound to an address, but this may lead to crosstalking.")
+    @Message(id = 31, value = "Could not bind multicast socket to %s (%s address): %s; make sure your multicast address is of the same type as the IP stack (IPv4 or IPv6). Multicast socket will not be bound to an address, but this may lead to cross-talking.")
     void potentialCrossTalking(InetAddress address, String addressType, String message);
 
     @LogMessage(level = INFO)
