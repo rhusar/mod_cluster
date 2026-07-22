@@ -50,7 +50,7 @@
 
     <issueManagement>
         <system>Jira</system>
-        <url>https://issues.redhat.com/browse/MODCLUSTER</url>
+        <url>https://redhat.atlassian.net/browse/MODCLUSTER</url>
     </issueManagement>
 
     <ciManagement>

@@ -96,7 +96,7 @@ Reporting Issues
 
 Project mod_cluster uses Red Hat Jira issue tracker under MODCLUSTER project:
 
-[https://issues.redhat.com/browse/MODCLUSTER](https://issues.redhat.com/browse/MODCLUSTER)
+[https://redhat.atlassian.net/browse/MODCLUSTER](https://redhat.atlassian.net/browse/MODCLUSTER)
 
 License
 -------
