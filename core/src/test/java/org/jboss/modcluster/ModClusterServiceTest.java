@@ -4,6 +4,7 @@
  */
 package org.jboss.modcluster;
 
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 import java.util.ArrayList;
@@ -80,7 +81,64 @@ public class ModClusterServiceTest {
         verify(mcmpHandler, never()).sendRequest(eq(null));
     }
 
+    @Test
+    void isEstablishedDelegatesToHandler() {
+        MCMPHandler mcmpHandler = mock(MCMPHandler.class);
+        ModClusterService mod = createModClusterService(mcmpHandler);
+
+        // Connection established, but no proxy configured (yet), or no longer
+        when(mcmpHandler.isEstablished()).thenReturn(false);
+        assertFalse(mod.isEstablished());
+        assertFalse(mod.enable());
+
+        when(mcmpHandler.isEstablished()).thenReturn(true);
+        assertTrue(mod.isEstablished());
+    }
+
+    @Test
+    void startServerEstablishesProxies() {
+        MCMPHandler mcmpHandler = mock(MCMPHandler.class);
+        ModClusterService mod = createModClusterService(mcmpHandler);
+
+        mod.start(setupServer());
+
+        verify(mcmpHandler).establish();
+        verify(mcmpHandler, never()).sendRequest(any());
+    }
+
+    @Test
+    void resetAndRefreshWithoutEstablishedProxies() {
+        MCMPHandler mcmpHandler = mock(MCMPHandler.class);
+        ModClusterService mod = createModClusterService(mcmpHandler);
+        when(mcmpHandler.isEstablished()).thenReturn(false);
+
+        mod.reset();
+        mod.refresh();
+
+        verify(mcmpHandler).reset();
+        verify(mcmpHandler).markProxiesInError();
+    }
+
+    @Test
+    void contextCommandsNotSentBeforeConnected() {
+        MCMPHandler mcmpHandler = mock(MCMPHandler.class);
+        ModClusterService mod = createModClusterService(mcmpHandler, false);
+        Context context = createContext(SOME_PATH);
+        addInnerContexts(context, context);
+
+        mod.add(context);
+        mod.start(context);
+        mod.stop(context);
+        mod.remove(context);
+
+        verify(mcmpHandler, never()).sendRequest(any());
+    }
+
     private ModClusterService createModClusterService(MCMPHandler mcmpHandler) {
+        return createModClusterService(mcmpHandler, true);
+    }
+
+    private ModClusterService createModClusterService(MCMPHandler mcmpHandler, boolean connected) {
         ModClusterService modClusterService = new ModClusterService(
                 null,
                 null,
@@ -93,7 +151,9 @@ public class ModClusterServiceTest {
                 mcmpHandler,
                 null);
         modClusterService.init(setupServer());
-        modClusterService.connectionEstablished(null);
+        if (connected) {
+            modClusterService.connectionEstablished(null);
+        }
 
         return modClusterService;
     }

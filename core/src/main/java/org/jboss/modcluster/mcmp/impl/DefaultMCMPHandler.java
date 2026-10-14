@@ -20,8 +20,10 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -90,7 +92,8 @@ public class DefaultMCMPHandler implements MCMPHandler {
     @GuardedBy("addRemoveProxiesLock")
     private final List<Proxy> removeProxies = new ArrayList<Proxy>();
 
-    private final AtomicBoolean established = new AtomicBoolean(false);
+    /** Whether the connection listener has been notified of the first successful connection to any proxy. */
+    private final AtomicBoolean connectionListenerNotified = new AtomicBoolean(false);
     private volatile MCMPConnectionListener connectionListener;
     private volatile boolean init = false;
 
@@ -186,8 +189,6 @@ public class DefaultMCMPHandler implements MCMPHandler {
                     return candidate;
             }
 
-            proxy.setState(Proxy.State.ERROR);
-
             this.addProxies.add(proxy);
         } finally {
             this.addRemoveProxiesLock.unlock();
@@ -199,12 +200,15 @@ public class DefaultMCMPHandler implements MCMPHandler {
     @Override
     @Deprecated
     public void addProxy(InetSocketAddress socketAddress, boolean established) {
-        this.add(socketAddress).setEstablished(established);
+        // A proxy can only become established by completing the handshake, see MODCLUSTER-879
+        this.add(socketAddress);
     }
 
     @Override
+    @Deprecated
     public void addProxy(ProxyConfiguration proxyConfiguration, boolean established) {
-        this.add(proxyConfiguration.getRemoteAddress(), proxyConfiguration.getLocalAddress()).setEstablished(established);
+        // A proxy can only become established by completing the handshake, see MODCLUSTER-879
+        this.add(proxyConfiguration.getRemoteAddress(), proxyConfiguration.getLocalAddress());
     }
 
     @Override
@@ -265,8 +269,11 @@ public class DefaultMCMPHandler implements MCMPHandler {
 
         try {
             for (Proxy proxy : this.proxies) {
-                if (proxy.getState() == MCMPServerState.State.OK) {
-                    proxy.setState(Proxy.State.ERROR);
+                // Synchronize with any in-flight request or handshake, so that this transition is not overwritten
+                synchronized (proxy) {
+                    if (proxy.getLifecycle() == Proxy.Lifecycle.CONNECTED || proxy.getLifecycle() == Proxy.Lifecycle.ESTABLISHED) {
+                        proxy.setLifecycle(Proxy.Lifecycle.ERROR);
+                    }
                 }
             }
         } finally {
@@ -281,10 +288,29 @@ public class DefaultMCMPHandler implements MCMPHandler {
 
         try {
             for (Proxy proxy : this.proxies) {
-                if (proxy.getState() == Proxy.State.DOWN) {
-                    proxy.setState(Proxy.State.ERROR);
+                synchronized (proxy) {
+                    if (proxy.getLifecycle() == Proxy.Lifecycle.DOWN) {
+                        proxy.setLifecycle(Proxy.Lifecycle.ERROR);
+                    }
                 }
             }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public boolean isEstablished() {
+        Lock lock = this.proxiesLock.readLock();
+        lock.lock();
+
+        try {
+            for (Proxy proxy : this.proxies) {
+                if (proxy.isEstablished()) {
+                    return true;
+                }
+            }
+            return false;
         } finally {
             lock.unlock();
         }
@@ -299,11 +325,30 @@ public class DefaultMCMPHandler implements MCMPHandler {
         }
     }
 
+    @Override
+    public synchronized void establish() {
+        if (this.init) {
+            Lock lock = this.proxiesLock.readLock();
+            lock.lock();
+
+            try {
+                for (Proxy proxy : this.proxies) {
+                    // Only complete handshakes with proxies that are known to be reachable
+                    if (proxy.getLifecycle() == Proxy.Lifecycle.CONNECTED) {
+                        this.handshake(proxy, true);
+                    }
+                }
+            } finally {
+                lock.unlock();
+            }
+        }
+    }
+
     /**
      * Send a periodic status request.
      *
-     * @param sendResetRequests if enabled, when in error state, the listener will attempt to refresh the configuration on the
-     *        front end server
+     * @param sendResetRequests if enabled, the handler will attempt to (re)configure the front end server and thus establish the
+     *        proxy; otherwise only connectivity is verified
      */
     private void status(boolean sendResetRequests) {
         Lock lock = this.proxiesLock.readLock();
@@ -311,36 +356,75 @@ public class DefaultMCMPHandler implements MCMPHandler {
 
         try {
             for (Proxy proxy : this.proxies) {
-                // Attempt to reset any proxies in error
-                if (proxy.getState() == Proxy.State.ERROR) {
+                Proxy.Lifecycle lifecycle = proxy.getLifecycle();
 
-                    proxy.closeConnection();
-
-                    String response = this.sendRequest(this.requestFactory.createInfoRequest(), proxy);
-
-                    if (proxy.getState() == Proxy.State.OK) {
-                        // Only notify connection listener once
-                        if (this.established.compareAndSet(false, true)) {
-                            this.connectionListener.connectionEstablished(proxy.getLocalAddress());
-                        }
-
-                        if (sendResetRequests) {
-                            Map<String, Set<ResetRequestSource.VirtualHost>> parsedResponse = this.responseParser
-                                    .parseInfoResponse(response);
-
-                            List<MCMPRequest> requests = this.resetRequestSource.getResetRequests(parsedResponse);
-
-                            log.trace(requests);
-
-                            this.sendRequestsToProxy(requests, proxy);
-                        }
-                    } else {
-                        proxy.closeConnection();
-                    }
+                // Attempt to (re)establish any proxies in error or which have not yet been configured
+                if (lifecycle == Proxy.Lifecycle.ERROR || (sendResetRequests && lifecycle == Proxy.Lifecycle.CONNECTED)) {
+                    this.handshake(proxy, sendResetRequests);
                 }
             }
         } finally {
             lock.unlock();
+        }
+    }
+
+    /**
+     * Performs the handshake with the given proxy: INFO, followed by the reset requests (including CONFIG). The proxy becomes
+     * {@link Proxy.Lifecycle#ESTABLISHED} only after all reset requests succeeded. The proxy monitor is held for the whole
+     * handshake, so that any concurrent request is either rejected before the reset requests are computed (and thus is
+     * reflected by them) or is sent only after the proxy is established.
+     *
+     * @param proxy the proxy to handshake with
+     * @param sendResetRequests whether to configure the proxy, or only verify connectivity
+     */
+    private void handshake(Proxy proxy, boolean sendResetRequests) {
+        synchronized (proxy) {
+            Proxy.Lifecycle lifecycle = proxy.getLifecycle();
+
+            if (lifecycle == Proxy.Lifecycle.ERROR) {
+                proxy.closeConnection();
+            } else if (lifecycle != Proxy.Lifecycle.CONNECTED) {
+                // State changed in the meantime
+                return;
+            }
+
+            Response info = this.send(this.requestFactory.createInfoRequest(), proxy);
+
+            if (!info.isSuccess()) {
+                return;
+            }
+
+            proxy.setLifecycle(Proxy.Lifecycle.CONNECTED);
+
+            // Only notify connection listener once
+            if (this.connectionListenerNotified.compareAndSet(false, true)) {
+                this.connectionListener.connectionEstablished(proxy.getLocalAddress());
+            }
+
+            if (!sendResetRequests) {
+                return;
+            }
+
+            Map<String, Set<ResetRequestSource.VirtualHost>> parsedResponse = this.responseParser.parseInfoResponse(info.getBody());
+
+            List<MCMPRequest> requests = this.resetRequestSource.getResetRequests(parsedResponse);
+
+            log.trace(requests);
+
+            boolean configured = false;
+
+            for (MCMPRequest request : requests) {
+                if (!this.send(request, proxy).isSuccess()) {
+                    // Proxy was already transitioned to ERROR or DOWN; the next periodic status will retry
+                    return;
+                }
+                configured |= request.getRequestType() == MCMPRequestType.CONFIG;
+            }
+
+            // Without a CONFIG (e.g. no engine is available yet) the node does not exist on the proxy
+            if (configured) {
+                proxy.setLifecycle(Proxy.Lifecycle.ESTABLISHED);
+            }
         }
     }
 
@@ -384,21 +468,6 @@ public class DefaultMCMPHandler implements MCMPHandler {
         }
 
         return map;
-    }
-
-    /**
-     * Like sendRequests, but only to a given Proxy, to be used when sending reset requests.
-     *
-     * @param requests list of MCMP requests to send
-     * @param proxy    The designated proxy to send the requests to
-     */
-    private List<String> sendRequestsToProxy(List<MCMPRequest> requests, Proxy proxy) {
-        List<String> list = new ArrayList<String>(requests.size());
-        for (MCMPRequest request : requests) {
-            list.add(this.sendRequest(request, proxy));
-        }
-
-        return list;
     }
 
     // ---------------------------------------------------------------- Private
@@ -459,12 +528,29 @@ public class DefaultMCMPHandler implements MCMPHandler {
         }
     }
 
+    /**
+     * Sends the given request to the given proxy, unless the proxy {@link Proxy.Lifecycle#accepts(MCMPRequestType) does not
+     * accept} it in its current lifecycle state.
+     *
+     * @return the response body, or {@code null} if the request was rejected or failed
+     */
     private String sendRequest(MCMPRequest request, Proxy proxy) {
-        // Never proceed with requests on a proxy in ERROR state unless the request type is INFO to return proxy back to OK state.
-        if (!(proxy.getState() == Proxy.State.OK || request.getRequestType() == MCMPRequestType.INFO)) {
-            return null;
-        }
+        // Check and send while holding the proxy monitor, so that a concurrent handshake cannot interleave
+        synchronized (proxy) {
+            if (!proxy.getLifecycle().accepts(request.getRequestType())) {
+                log.tracef("Not sending to %s in %s state: %s", proxy, proxy.getLifecycle(), request);
+                return null;
+            }
 
+            return this.send(request, proxy).getBody();
+        }
+    }
+
+    /**
+     * Sends the given request to the given proxy regardless of its lifecycle state. On failure, the proxy is transitioned to
+     * {@link Proxy.Lifecycle#ERROR} or {@link Proxy.Lifecycle#DOWN}; a successful response does not change its state.
+     */
+    private Response send(MCMPRequest request, Proxy proxy) {
         log.tracef("Sending to %s: %s", proxy, request);
 
         MCMPRequestType requestType = request.getRequestType();
@@ -520,6 +606,7 @@ public class DefaultMCMPHandler implements MCMPHandler {
 
         // Require exclusive access to proxy socket
         synchronized (proxy) {
+            boolean success = false;
             try {
                 String line = null;
                 String host = proxy.getSocketAddress().getHostString();
@@ -560,7 +647,9 @@ public class DefaultMCMPHandler implements MCMPHandler {
                         while (spaceIndex == -1) {
                             line = reader.readLine();
                             if (line == null) {
-                                return null; // Connection closed...
+                                // Connection closed without a response
+                                proxy.setLifecycle(Proxy.Lifecycle.ERROR);
+                                return Response.FAILED;
                             }
                             spaceIndex = line.indexOf(' ');
                         }
@@ -594,22 +683,21 @@ public class DefaultMCMPHandler implements MCMPHandler {
 
                 // Mark as error if the front end server did not return 200; the configuration will
                 // be refreshed during the next periodic event
+                // n.b. a successful response never promotes the proxy; only a completed handshake does
                 if (status == 200) {
-                    proxy.setState(State.OK);
+                    success = true;
 
-                    if (request.getRequestType().getEstablishesServer()) {
-                        // We know the request succeeded, so if appropriate
-                        // mark the proxy as established before any possible
-                        // later exception happens
-                        proxy.setEstablished(true);
+                    // REMOVE-APP * removes the node from the proxy, which thus needs to be configured again
+                    if (requestType == MCMPRequestType.REMOVE_APP && wildcard && proxy.getLifecycle() == Proxy.Lifecycle.ESTABLISHED) {
+                        proxy.setLifecycle(Proxy.Lifecycle.CONNECTED);
                     }
                 } else {
                     if ("SYNTAX".equals(errorType)) {
                         // Syntax error means the protocol is incorrect, which cannot be automatically fixed
-                        proxy.setState(Proxy.State.DOWN);
+                        proxy.setLifecycle(Proxy.Lifecycle.DOWN);
                         ModClusterLogger.LOGGER.unrecoverableErrorResponse(errorType, requestType, proxy.getSocketAddress(), message);
                     } else {
-                        proxy.setState(Proxy.State.ERROR);
+                        proxy.setLifecycle(Proxy.Lifecycle.ERROR);
                         ModClusterLogger.LOGGER.recoverableErrorResponse(errorType, requestType, proxy.getSocketAddress(), message);
                     }
                 }
@@ -617,7 +705,7 @@ public class DefaultMCMPHandler implements MCMPHandler {
                 if (close) {
                     contentLength = Integer.MAX_VALUE;
                 } else if (contentLength == 0 && ! chunked) {
-                    return null;
+                    return new Response(success, null);
                 }
 
                 // Read the request body
@@ -658,7 +746,7 @@ public class DefaultMCMPHandler implements MCMPHandler {
                     }
                 }
 
-                if (proxy.getState() == State.OK) {
+                if (success) {
                     proxy.setIoExceptionLogged(false);
                 }
 
@@ -666,10 +754,12 @@ public class DefaultMCMPHandler implements MCMPHandler {
                     proxy.closeConnection();
                 }
 
-                return result.toString();
+                return new Response(success, result.toString());
             } catch (IOException e) {
+                success = false;
+
                 // Most likely this is a connection error with the proxy
-                proxy.setState(Proxy.State.ERROR);
+                proxy.setLifecycle(Proxy.Lifecycle.ERROR);
 
                 // Log it only if we haven't done so already. Don't spam the log
                 if (!proxy.isIoExceptionLogged()) {
@@ -678,13 +768,36 @@ public class DefaultMCMPHandler implements MCMPHandler {
                     proxy.setIoExceptionLogged(true);
                 }
 
-                return null;
+                return Response.FAILED;
             } finally {
                 // If there's an error of any sort, or if the proxy did not return 200, it is an error
-                if (proxy.getState() != Proxy.State.OK) {
+                if (!success) {
                     proxy.closeConnection();
                 }
             }
+        }
+    }
+
+    /**
+     * Outcome of a single request sent to a proxy.
+     */
+    private static class Response {
+        static final Response FAILED = new Response(false, null);
+
+        private final boolean success;
+        private final String body;
+
+        Response(boolean success, String body) {
+            this.success = success;
+            this.body = body;
+        }
+
+        boolean isSuccess() {
+            return this.success;
+        }
+
+        String getBody() {
+            return this.body;
         }
     }
 
@@ -699,8 +812,44 @@ public class DefaultMCMPHandler implements MCMPHandler {
         private InetSocketAddress socketAddress;
         private final InetSocketAddress sourceAddress;
 
-        private volatile State state = State.OK;
-        private volatile boolean established = false;
+        /**
+         * Lifecycle of the communication with a proxy, see {@code doc/design/proxy-lifecycle.md}.
+         */
+        enum Lifecycle {
+            /** Not reachable or not yet contacted; only {@code INFO} is allowed, and the next status will handshake. */
+            ERROR(State.ERROR, MCMPRequestType.INFO),
+            /** Reachable ({@code INFO} succeeded), but the node has not yet been configured via {@code CONFIG}. */
+            CONNECTED(State.ERROR, MCMPRequestType.INFO, MCMPRequestType.DUMP, MCMPRequestType.PING),
+            /** Configured; all requests are allowed. */
+            ESTABLISHED(State.OK, MCMPRequestType.values()),
+            /** Unrecoverable error; requires an explicit {@link DefaultMCMPHandler#reset()}. */
+            DOWN(State.DOWN, MCMPRequestType.INFO),
+            ;
+
+            private final State state;
+            private final Set<MCMPRequestType> acceptedRequestTypes;
+
+            Lifecycle(State state, MCMPRequestType... acceptedRequestTypes) {
+                this.state = state;
+                this.acceptedRequestTypes = EnumSet.copyOf(Arrays.asList(acceptedRequestTypes));
+            }
+
+            /**
+             * @return the externally visible state
+             */
+            State getState() {
+                return this.state;
+            }
+
+            /**
+             * @return whether a request of the given type may be sent to a proxy in this lifecycle state
+             */
+            boolean accepts(MCMPRequestType requestType) {
+                return this.acceptedRequestTypes.contains(requestType);
+            }
+        }
+
+        private volatile Lifecycle lifecycle = Lifecycle.ERROR;
 
         private final transient int socketTimeout;
         private final transient SocketFactory socketFactory;
@@ -730,7 +879,7 @@ public class DefaultMCMPHandler implements MCMPHandler {
 
         @Override
         public State getState() {
-            return this.state;
+            return this.lifecycle.getState();
         }
 
         // ----------------------------------------------------------- MCMPServer
@@ -742,7 +891,7 @@ public class DefaultMCMPHandler implements MCMPHandler {
 
         @Override
         public boolean isEstablished() {
-            return this.established;
+            return this.lifecycle == Lifecycle.ESTABLISHED;
         }
 
         // ------------------------------------------------------------ Overrides
@@ -769,12 +918,15 @@ public class DefaultMCMPHandler implements MCMPHandler {
 
         // -------------------------------------------------------------- Private
 
-        void setState(State state) {
-            this.state = state;
+        Lifecycle getLifecycle() {
+            return this.lifecycle;
         }
 
-        void setEstablished(boolean established) {
-            this.established = established;
+        void setLifecycle(Lifecycle lifecycle) {
+            if (this.lifecycle != lifecycle) {
+                log.tracef("Proxy %s transitioned from %s to %s", this, this.lifecycle, lifecycle);
+                this.lifecycle = lifecycle;
+            }
         }
 
         /**

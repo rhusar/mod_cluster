@@ -74,9 +74,9 @@ public interface MCMPHandler {
      * to {@link #status()}.
      *
      * @param socketAddress InetSocketAddress on which the proxy listens for MCMP requests
-     * @param established <code>true</code> if the proxy should be considered {@link MCMPServer#isEstablished() established},
-     *        <code>false</code> otherwise.
-     * @deprecated See {@link #addProxy(org.jboss.modcluster.config.ProxyConfiguration, boolean)}
+     * @param established ignored; a proxy only becomes {@link MCMPServer#isEstablished() established} once it has been
+     *        successfully configured
+     * @deprecated See {@link #addProxy(org.jboss.modcluster.config.ProxyConfiguration)}
      */
     @Deprecated
     void addProxy(InetSocketAddress socketAddress, boolean established);
@@ -87,9 +87,11 @@ public interface MCMPHandler {
      *
      * @param proxyConfiguration {@link ProxyConfiguration} defining address on which the proxy listens for MCMP requests
      *                           and optional local address to bind connections to
-     * @param established        {@code true} if the proxy should be considered {@link MCMPServer#isEstablished() established},
-     *                           {@code false} otherwise.
+     * @param established        ignored; a proxy only becomes {@link MCMPServer#isEstablished() established} once it has been
+     *                           successfully configured
+     * @deprecated See {@link #addProxy(org.jboss.modcluster.config.ProxyConfiguration)}
      */
+    @Deprecated
     void addProxy(ProxyConfiguration proxyConfiguration, boolean established);
 
     /**
@@ -127,10 +129,34 @@ public interface MCMPHandler {
     boolean isProxyHealthOK();
 
     /**
+     * Indicates whether at least one proxy is {@link MCMPServer#isEstablished() established}, i.e. it has been successfully
+     * configured and accepts all requests.
+     *
+     * @return <code>true</code> if any proxy is established, <code>false</code> otherwise
+     */
+    default boolean isEstablished() {
+        for (MCMPServerState state : this.getProxyStates()) {
+            if (state.isEstablished()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Configures any proxies which are reachable, but have not been {@link MCMPServer#isEstablished() established} yet,
+     * e.g. once the server has been started. Unlike {@link #status()}, does not attempt to reconnect proxies in error.
+     */
+    default void establish() {
+        this.status();
+    }
+
+    /**
      * Perform periodic processing. Update the list of proxies to reflect any calls to <code>addProxy(...)</code> or
-     * <code>removeProxy(...)</code>. Attempt to establish communication with any proxies whose state is
-     * {@link MCMPServerState.State#ERROR ERROR}. If successful and a {@link ResetRequestSource} has been provided, update the proxy
-     * with the list of requests provided by the source.
+     * <code>removeProxy(...)</code>. Attempt to establish communication with any proxies which are not
+     * {@link MCMPServer#isEstablished() established}, except those that are {@link MCMPServerState.State#DOWN DOWN}.
+     * If successful, update the proxy with the list of requests provided by the {@link ResetRequestSource}; the proxy becomes
+     * established once these requests succeed.
      */
     void status();
 }

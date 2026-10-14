@@ -70,7 +70,15 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
     private final Map<String, Set<String>> excludedContexts = new HashMap<String, Set<String>>();
     private final ConcurrentMap<Context, EnablableRequestListener> requestListeners = new ConcurrentHashMap<Context, EnablableRequestListener>();
 
-    private volatile boolean established = false;
+    /**
+     * Indicates that a connection to some proxy succeeded at least once, and thus the node identity (connector address and
+     * jvmRoute) has been initialized. This does not imply that any proxy is currently established, see {@link #isEstablished()}.
+     * <p>
+     * Context commands are gated on this flag rather than on {@link #isEstablished()}: the {@link MCMPHandler} only sends them to
+     * established proxies, and a context command must not be skipped while a proxy is completing its handshake, otherwise
+     * the change could be missed by both. See {@code doc/design/proxy-lifecycle.md}.
+     */
+    private volatile boolean connected = false;
     private volatile boolean autoEnableContexts = true;
     private volatile Server server;
 
@@ -190,20 +198,16 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
     public void start(Server server) {
         ModClusterLogger.LOGGER.startServer();
 
-        if (this.established) {
-            for (Engine engine : server.getEngines()) {
-                this.config(engine);
-
-                // n.b. MODCLUSTER-790 do not ContainerEventHandler#add(..) the context here - wait for actual start(..)
-            }
-        }
+        // Configure reachable proxies which are not established, e.g. since stop(Server) removed this node via REMOVE-APP *
+        // n.b. MODCLUSTER-790 do not ContainerEventHandler#add(..) the context here - wait for actual start(..)
+        this.mcmpHandler.establish();
     }
 
     @Override
     public void stop(Server server) {
         ModClusterLogger.LOGGER.stopServer();
 
-        if (this.established) {
+        if (this.isEstablished()) {
             for (Engine engine : server.getEngines()) {
                 for (Host host : engine.getHosts()) {
                     for (Context context : host.getContexts()) {
@@ -222,7 +226,10 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
 
     /**
      * Configures the specified engine. Sends CONFIG request.
+     *
+     * @deprecated Proxies are configured by the {@link MCMPHandler} as part of establishing them, see {@link MCMPHandler#establish()}.
      */
+    @Deprecated
     protected void config(Engine engine) {
         ModClusterLogger.LOGGER.sendEngineCommand(MCMPRequestType.CONFIG, engine);
 
@@ -237,7 +244,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
 
     @Override
     public boolean isEstablished() {
-        return this.established;
+        return this.mcmpHandler.isEstablished();
     }
 
     @Override
@@ -260,7 +267,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
             this.establishJvmRoute(engine);
         }
 
-        this.established = true;
+        this.connected = true;
     }
 
     protected void establishJvmRoute(Engine engine) {
@@ -278,7 +285,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
     public void add(Context context) {
         ModClusterLogger.LOGGER.addContext(context.getHost(), context);
 
-        if (this.include(context) && this.established) {
+        if (this.include(context) && this.connected) {
             // Send a STOP-APP directly, without session draining.
             this.mcmpHandler.sendRequest(this.requestFactory.createStopRequest(context));
         }
@@ -289,7 +296,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
         ModClusterLogger.LOGGER.startContext(context.getHost(), context);
 
         if (this.include(context)) {
-            if (this.established) {
+            if (this.connected) {
                 this.enable(context);
             }
 
@@ -330,13 +337,14 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
     public void stop(Context context) {
         ModClusterLogger.LOGGER.stopContext(context.getHost(), context);
 
-        if (this.established && this.include(context) && !hasContextMultipleReferences(context)) {
+        if (this.connected && this.include(context) && !hasContextMultipleReferences(context)) {
             this.disable(context);
 
             long start = System.currentTimeMillis();
             long end = start + this.mcmpConfig.getStopContextTimeoutUnit().toMillis(this.mcmpConfig.getStopContextTimeout());
 
-            if (this.mcmpConfig.getSessionDrainingStrategy().isEnabled(context)) {
+            // Draining sessions is pointless if no proxy routes requests to this node
+            if (this.isEstablished() && this.mcmpConfig.getSessionDrainingStrategy().isEnabled(context)) {
                 // If the session manager is not distributed
                 // we need to drain the active sessions
                 // before draining pending requests.
@@ -353,7 +361,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
         ModClusterLogger.LOGGER.removeContext(context.getHost(), context);
 
         if (this.include(context) && !hasContextMultipleReferences(context)) {
-            if (this.established) {
+            if (this.connected) {
                 ModClusterLogger.LOGGER.sendContextCommand(MCMPRequestType.REMOVE_APP, context.getHost(), context);
 
                 this.mcmpHandler.sendRequest(this.requestFactory.createRemoveRequest(context));
@@ -387,7 +395,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
 
         this.mcmpHandler.status();
 
-        if (this.established) {
+        if (this.isEstablished()) {
             // Send STATUS request
             int lbf = connector.isAvailable() ? this.getLoadBalanceFactor(engine) : -1;
 
@@ -455,7 +463,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
     }
 
     private Map<InetSocketAddress, String> getProxyResults(MCMPRequest request) {
-        if (!this.established)
+        if (!this.connected)
             return Collections.emptyMap();
 
         Map<MCMPServerState, String> responses = this.mcmpHandler.sendRequest(request);
@@ -476,22 +484,18 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
 
     @Override
     public void reset() {
-        if (this.established) {
-            this.mcmpHandler.reset();
-        }
+        this.mcmpHandler.reset();
     }
 
     @Override
     public void refresh() {
-        if (this.established) {
-            // Set as error, and the periodic event will refresh the configuration
-            this.mcmpHandler.markProxiesInError();
-        }
+        // Set as error, and the periodic event will refresh the configuration
+        this.mcmpHandler.markProxiesInError();
     }
 
     @Override
     public boolean disable() {
-        if (!this.established)
+        if (!this.isEstablished())
             return false;
 
         for (Engine engine : this.server.getEngines()) {
@@ -504,7 +508,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
 
     @Override
     public boolean enable() {
-        if (!this.established)
+        if (!this.isEstablished())
             return false;
 
         for (Engine engine : this.server.getEngines()) {
@@ -519,7 +523,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
 
     @Override
     public boolean disableContext(String host, String path) {
-        if (!this.established)
+        if (!this.isEstablished())
             return false;
 
         Context context = this.findContext(this.findHost(host), path);
@@ -532,7 +536,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
 
     @Override
     public boolean enableContext(String host, String path) {
-        if (!this.established)
+        if (!this.isEstablished())
             return false;
 
         Context context = this.findContext(this.findHost(host), path);
@@ -545,7 +549,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
 
     @Override
     public boolean stop(long timeout, TimeUnit unit) {
-        if (!this.established)
+        if (!this.isEstablished())
             return false;
 
         // Send DISABLE-APP * requests
@@ -577,7 +581,7 @@ public class ModClusterService implements ModClusterServiceMBean, ContainerEvent
 
     @Override
     public boolean stopContext(String host, String path, long timeout, TimeUnit unit) {
-        if (!this.established)
+        if (!this.isEstablished())
             return false;
 
         Context context = this.findContext(this.findHost(host), path);
